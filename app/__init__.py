@@ -6,6 +6,7 @@ from flask_migrate import Migrate
 from flask_login import LoginManager
 from flask_wtf.csrf import CSRFProtect
 from flask_crontab import Crontab
+from app import version
 
 
 db = SQLAlchemy()
@@ -32,9 +33,13 @@ def create_app(config_class=None):
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = 'ThisIsNotTheKeyYouAreLookingFor'
     app.config['SESSION_COOKIE_HTTPONLY'] = True
+    # The referrer is disabled further down in the response headers.
+    app.config['WTF_CSRF_SSL_STRICT'] = False
 
     # And now we override any custom settings from config.cfg if it exists.
     app.config.from_pyfile('config.py', silent=True)
+
+    app.config['CRACKERJACK_VERSION'] = version.__version__
 
     # If we have passed any object on app creation (ie testing), override here.
     if config_class is not None:
@@ -52,14 +57,8 @@ def create_app(config_class=None):
     from app.controllers.auth import bp as auth_bp
     app.register_blueprint(auth_bp, url_prefix='/auth')
 
-    from app.controllers.admin import bp as admin_bp
-    app.register_blueprint(admin_bp, url_prefix='/admin')
-
     from app.controllers.sessions import bp as sessions_bp
     app.register_blueprint(sessions_bp, url_prefix='/sessions')
-
-    from app.controllers.account import bp as account_bp
-    app.register_blueprint(account_bp, url_prefix='/account')
 
     from app.controllers.install import bp as install_bp
     app.register_blueprint(install_bp, url_prefix='/install')
@@ -70,6 +69,12 @@ def create_app(config_class=None):
 
     from app.controllers.webpush import bp as webpush_bp
     app.register_blueprint(webpush_bp, url_prefix='/webpush')
+
+    from app.controllers.modules import bp as modules_bp
+    app.register_blueprint(modules_bp)
+
+    from app.controllers.config import bp as config_bp
+    app.register_blueprint(config_bp)
 
     from app.lib.base.provider import Provider
 

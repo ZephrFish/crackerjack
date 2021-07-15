@@ -23,16 +23,18 @@
             <div class="card">
                 <h4 class="card-header">Hashcat Setup</h4>
                 <div class="card-body">
-                    {% if session.guess_hashtype|length > 0 %}
+                    {% if guess_hashtype.matches|length > 0 %}
                     <div class="form-group">
+                        {% if guess_hashtype.descriptions.items()|length > 0 %}
                         <div class="alert alert-primary">
                             Possible Hash Type:
                             <ul>
-                                {% for hashtype in session.guess_hashtype %}
-                                <li>{{ hashtype }}</li>
+                                {% for hashtype, name in guess_hashtype.descriptions.items() %}
+                                <li>{{ hashtype }} - {{ name }}</li>
                                 {% endfor %}
                             </ul>
                         </div>
+                        {% endif %}
                     </div>
                     {% endif %}
 

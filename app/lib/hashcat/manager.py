@@ -3,23 +3,39 @@ import re
 
 
 class HashcatManager:
-    def __init__(self, shell, hashcat_binary, status_interval=10, force=False):
+    def __init__(self, shell, hashcat_binary, hashid, status_interval=10, force=False):
         self.shell = shell
         self.hashcat_binary = hashcat_binary
+        self.hashid = hashid
         self.status_interval = 10 if int(status_interval) <= 0 else int(status_interval)
         self.force = force
 
     def get_supported_hashes(self):
-        output = self.shell.execute([self.hashcat_binary, '--help'], user_id=0)
+        output = self.shell.execute([self.hashcat_binary, '--help'], user_id=0, log_to_db=False)
 
         # Split lines using \n and run strip against all elements of the list.
         lines = list(map(str.strip, output.split("\n")))
         hashes = self.__parse_supported_hashes(lines)
         return hashes
 
+    def guess_hash(self, hash):
+        supported_hashes = self.get_supported_hashes()
+
+        results = self.hashid.guess(hash)
+        results['descriptions'] = {}
+        for hashtype in results['matches']:
+            description = self.__get_hashtype_description(hashtype, supported_hashes=supported_hashes)
+            if len(description) == 0:
+                continue
+            results['descriptions'][hashtype] = description
+
+        return results
+
     def __parse_supported_hashes(self, lines):
         found = False
         hashes = {}
+        alphanum_hashes = {}
+        parent_code = ''
         for line in lines:
             if line == '- [ Hash modes ] -':
                 found = True
@@ -34,11 +50,60 @@ class HashcatManager:
                 if info is False:
                     continue
 
-                if not info['category'] in hashes:
-                    hashes[info['category']] = {}
+                if not info['code'].isnumeric():
+                    if info['code'][0].isdigit():
+                        parent_code = info['code']
 
-                hashes[info['category']][info['code']] = info['name']
+                    if parent_code not in alphanum_hashes:
+                        alphanum_hashes[parent_code] = {
+                            'code': info['code'],
+                            'name': info['name'],
+                            'category': info['category'],
+                            'data': {}
+                        }
+                    else:
+                        if info['code'] not in alphanum_hashes[parent_code]['data']:
+                            alphanum_hashes[parent_code]['data'][info['code']] = []
+                        alphanum_hashes[parent_code]['data'][info['code']].append(info['name'])
+                else:
+                    if not info['category'] in hashes:
+                        hashes[info['category']] = {}
 
+                    hashes[info['category']][info['code']] = info['name']
+
+        return self.__fix_alphanum_hashes(hashes, alphanum_hashes)
+
+    def __fix_alphanum_hashes(self, hashes, alphanum_hashes):
+        if len(alphanum_hashes) == 0:
+            return hashes
+
+        grouped = {}
+        for parent_type, data in alphanum_hashes.items():
+            grouped[data['code']] = {
+                'category': data['category'],
+                'items': {}
+            }
+            for type1 in data['data']['X']:
+                code1 = type1[0].strip()
+                name1 = type1[3:].strip()
+                for type2 in data['data']['Y']:
+                    code2 = type2[0].strip()
+                    name2 = type2[3:].strip()
+
+                    code = data['code'].replace('X', code1).replace('Y', code2)
+                    if code not in grouped[data['code']]['items']:
+                        grouped[data['code']]['items'][code] = "{0} {1} + {2}".format(data['name'], name1, name2)
+                    else:
+                        # Same number can map to another encryption algorithm.
+                        grouped[data['code']]['items'][code] += " / {0}".format(name2)
+
+        for code, data in grouped.items():
+            category = data['category']
+            for code, name in data['items'].items():
+                if not category in hashes:
+                    hashes[category] = {}
+
+                hashes[category][code] = name
         return hashes
 
     def __parse_hash_line(self, line):
@@ -63,6 +128,25 @@ class HashcatManager:
         data = collections.OrderedDict(sorted(data.items(), key=lambda kv: kv[1]))
         return data
 
+    def __get_hashtype_description(self, hash_type, supported_hashes=None):
+        description = ''
+        if supported_hashes is None:
+            supported_hashes = self.get_supported_hashes()
+
+        if not isinstance(hash_type, int):
+            hash_type = int(hash_type)
+
+        for type, hashes in supported_hashes.items():
+            for code, name in hashes.items():
+                if int(code) == hash_type:
+                    description = name
+                    break
+
+            if len(description) > 0:
+                break
+
+        return description
+
     def is_valid_hash_type(self, hash_type):
         valid = False
         supported_hashes = self.get_supported_hashes()
@@ -77,7 +161,7 @@ class HashcatManager:
 
         return valid
 
-    def build_export_password_command_line(self, hashfile, potfile, save_as):
+    def build_export_password_command_line(self, hashfile, potfile, save_as, contains_usernames, hashtype):
         command = [
             self.hashcat_binary,
             '--potfile-path',
@@ -87,13 +171,16 @@ class HashcatManager:
             '--outfile-format',
             '2',
             '--show',
-            hashfile
+            hashfile,
+            '--hash-type',
+            hashtype,
+            '--username' if contains_usernames == 1 else ''
         ]
 
         return command
 
     def build_command_line(self, session_name, mode, mask, hashtype, hashfile, wordlist, rule, outputfile, potfile,
-                           increment_min, increment_max, optimised_kernel, workload):
+                           increment_min, increment_max, optimised_kernel, workload, contains_usernames):
         command = {
             self.hashcat_binary: '',
             '--session': session_name,
@@ -135,6 +222,9 @@ class HashcatManager:
 
         if optimised_kernel == 1:
             command['--optimized-kernel-enable'] = ''
+
+        if contains_usernames == 1:
+            command['--username'] = ''
 
         if self.force:
             command['--force'] = ''
@@ -272,7 +362,7 @@ class HashcatManager:
             return []
 
         # Return only the command column from the running processes.
-        output = self.shell.execute(['ps', '-www', '-x', '-o', 'cmd'], user_id=0)
+        output = self.shell.execute(['ps', '-www', '-x', '-o', 'cmd'], user_id=0, log_to_db=False)
         output = output.split("\n")
 
         processes = []
